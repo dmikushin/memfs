@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <sys/mount.h>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
@@ -69,6 +70,11 @@ public :
 
 	virtual FuseStatus start()
 	{
+		if (geteuid() == 0)
+		{
+			status = FuseErrorRootDisallowed;
+			return status;
+		}
 		if (status == FuseSuccess)
 			return FuseErrorAlreadyStarted;
 		
@@ -121,6 +127,17 @@ public :
 	
 	virtual FuseStatus stop()
 	{
+		if (status != FuseSuccess)
+			return status;
+
+		int notLazy = 0;
+		if (umount2(mountpoint.c_str(), notLazy) == -1)
+		{
+			status = FuseErrorUnmount;
+			return status;
+		}
+			
+		status = FuseErrorUnitialized;
 		return status;
 	}
 	

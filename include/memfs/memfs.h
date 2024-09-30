@@ -8,11 +8,13 @@ enum FuseStatus
 	FuseSuccess = 0,
 	FuseErrorNew = 1,
 	FuseErrorMount = 2,
-	FuseErrorSignalHandlers = 3,
-	FuseErrorLoopConfig = 4,
-	FuseErrorLoop = 5,
-	FuseErrorUnitialized = 6,
-	FuseErrorAlreadyStarted
+	FuseErrorUnmount = 3,
+	FuseErrorSignalHandlers = 4,
+	FuseErrorLoopConfig = 5,
+	FuseErrorLoop = 6,
+	FuseErrorUnitialized = 7,
+	FuseErrorAlreadyStarted = 8,
+	FuseErrorRootDisallowed = 9
 };
 
 const char* fuseGetErrorString(FuseStatus status);
