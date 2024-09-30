@@ -19,29 +19,207 @@
  * associated repository.
  */
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
-#include <algorithm>
+#include <fuse.h>
+#include <fuse_common.h>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 #include <vector>
 
-#include <fuse.h>
+#include "memfs/memfs.h"
 #include "memfs_compat.h"
 
-class memfs
+namespace memfs {
+
+class Fuse
 {
-public:
-    memfs() : _ino(1), _root(std::make_shared<node_t>(_ino, S_IFDIR | 00777, 0, 0))
+    Fuse(Fuse const&) = delete;
+    void operator=(Fuse const&) = delete;
+
+protected :
+
+	virtual void getFuseOperations(const struct fuse_operations **op, size_t *op_size) = 0;
+
+private :
+	
+	const std::string mountpoint;
+	void *user_data;
+	
+	FuseStatus status = FuseErrorUnitialized;
+	struct fuse *fuse = nullptr;
+	struct fuse_session *se = nullptr;
+#if 0
+	struct fuse_loop_config *loop_config = nullptr;
+#endif
+protected :
+
+	Fuse(const std::string& mountpoint_, void *user_data_) :
+	
+	mountpoint(mountpoint_), user_data(user_data_) { }
+
+public :
+
+	FuseStatus getStatus() const { return status; }
+
+	virtual FuseStatus start()
+	{
+		if (status == FuseSuccess)
+			return FuseErrorAlreadyStarted;
+		
+		const struct fuse_operations *op;
+		size_t op_size;
+		getFuseOperations(&op, &op_size);
+		
+		fuse = fuse_new(nullptr, op, op_size, user_data);
+		if (fuse == NULL) {
+			status = FuseErrorNew;
+			return status;
+		}
+
+		if (fuse_mount(fuse, mountpoint.c_str())) {
+			status = FuseErrorMount;
+			return status;
+		}
+
+		se = fuse_get_session(fuse);
+		if (fuse_set_signal_handlers(se)) {
+			status = FuseErrorSignalHandlers;
+			return status;
+		}
+
+		status = FuseSuccess;
+#if 0
+		loop_config = fuse_loop_cfg_create();
+		if (loop_config == NULL) {
+			status = FuseErrorLoopConfig;
+			goto out3;
+		}
+
+		const unsigned int enable = 1;
+		fuse_loop_cfg_set_clone_fd(loop_config, enable);
+
+		long num_threads = sysconf(_SC_NPROCESSORS_ONLN);
+		fuse_loop_cfg_set_idle_threads(loop_config, num_threads);
+		fuse_loop_cfg_set_max_threads(loop_config, num_threads);
+		
+		status = FuseSuccess;
+			
+		if (fuse_loop_mt(fuse, loop_config))
+			status = FuseErrorLoop;
+#else
+		if (fuse_loop(fuse))
+			status = FuseErrorLoop;
+#endif
+		return status;
+	}
+	
+	virtual FuseStatus stop()
+	{
+		return status;
+	}
+	
+	virtual ~Fuse()
+	{
+		if (se)
+			fuse_remove_signal_handlers(se);
+
+		if (status != FuseErrorMount)
+			fuse_unmount(fuse);
+
+		if (fuse)
+			fuse_destroy(fuse);
+	}
+};
+
+static fuse_timespec now()
+{
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    auto sec = floor<seconds>(now);
+    auto nsec = floor<nanoseconds>(now) - floor<nanoseconds>(sec);
+    return fuse_timespec
     {
+        static_cast<decltype(fuse_timespec::tv_sec)>(sec.time_since_epoch().count()),
+            /* std::chrono epoch is UNIX epoch in C++20 */
+        static_cast<decltype(fuse_timespec::tv_nsec)>(nsec.count()),
+    };
+}
+
+struct MemfsNode
+{
+    MemfsNode(fuse_ino_t ino, fuse_mode_t mode, fuse_uid_t uid, fuse_gid_t gid, fuse_dev_t dev = 0)
+        : stat()
+    {
+        stat.st_ino = ino;
+        stat.st_mode = mode;
+        stat.st_nlink = 1;
+        stat.st_uid = uid;
+        stat.st_gid = gid;
+        stat.st_rdev = dev;
+        stat.st_atim = stat.st_mtim = stat.st_ctim = now();
     }
 
-    int main(int argc, char *argv[])
+    void resize(size_t size, bool capacity)
     {
-        static fuse_operations ops =
+        if (capacity)
+        {
+            const size_t unit = 64 * 1024;
+            size_t newcap = (size + unit - 1) / unit * unit;
+            size_t oldcap = data.capacity();
+            if (newcap > oldcap)
+                data.reserve(newcap);
+            else if (newcap < oldcap)
+            {
+                data.resize(newcap);
+                data.shrink_to_fit();
+            }
+        }
+        data.resize(size);
+        stat.st_size = size;
+    }
+
+    struct fuse_stat stat;
+    std::vector<uint8_t> data;
+    std::unordered_map<std::string, std::shared_ptr<MemfsNode>> childmap;
+    std::unordered_map<std::string, std::vector<uint8_t>> xattrmap;
+};
+
+// TODO
+// class FuseThread : public Fuse
+// {
+// };
+
+class FuseMemfs : public Fuse
+{
+    FuseMemfs(FuseMemfs const&) = delete;
+    void operator=(FuseMemfs const&) = delete;
+
+public :
+
+    static FuseStatus create(FuseMemfs** memfs,
+    	const std::string& mountpoint, fuse_mode_t mode = 00777,
+    	fuse_uid_t uid = 0, fuse_gid_t gid = 0, fuse_dev_t dev = 0)
+	{
+    	FuseMemfs *memfs_ = new FuseMemfs(mountpoint, mode, uid, gid, dev);
+		memfs_->start();
+    	if (memfs_->getStatus() != FuseSuccess)
+    		return memfs_->getStatus();
+    	
+    	*memfs = memfs_;
+    	return FuseSuccess;
+    }
+
+protected :
+
+	virtual void getFuseOperations(const struct fuse_operations **op, size_t *op_size) override
+	{
+        static fuse_operations op_ =
         {
             getattr,
             readlink,
@@ -81,66 +259,26 @@ public:
             ioctl,
 #endif
         };
-        return fuse_main(argc, argv, &ops, this);
-    }
+        
+        *op = &op_;
+        *op_size = sizeof(op);
+	}
 
-private:
-    struct node_t
+private :
+
+    FuseMemfs(const std::string& mountpoint, fuse_mode_t mode,
+    	fuse_uid_t uid, fuse_gid_t gid, fuse_dev_t dev) :
+    
+   	Fuse(mountpoint, this),
+
+	_ino(1), _root(std::make_shared<MemfsNode>(_ino, S_IFDIR | mode, uid, gid, dev)) { }
+
+
+private :
+
+    static FuseMemfs *getself()
     {
-        node_t(fuse_ino_t ino, fuse_mode_t mode, fuse_uid_t uid, fuse_gid_t gid, fuse_dev_t dev = 0)
-            : stat()
-        {
-            stat.st_ino = ino;
-            stat.st_mode = mode;
-            stat.st_nlink = 1;
-            stat.st_uid = uid;
-            stat.st_gid = gid;
-            stat.st_rdev = dev;
-            stat.st_atim = stat.st_mtim = stat.st_ctim = now();
-        }
-
-        void resize(size_t size, bool capacity)
-        {
-            if (capacity)
-            {
-                const size_t unit = 64 * 1024;
-                size_t newcap = (size + unit - 1) / unit * unit;
-                size_t oldcap = data.capacity();
-                if (newcap > oldcap)
-                    data.reserve(newcap);
-                else if (newcap < oldcap)
-                {
-                    data.resize(newcap);
-                    data.shrink_to_fit();
-                }
-            }
-            data.resize(size);
-            stat.st_size = size;
-        }
-
-        struct fuse_stat stat;
-        std::vector<uint8_t> data;
-        std::unordered_map<std::string, std::shared_ptr<node_t>> childmap;
-        std::unordered_map<std::string, std::vector<uint8_t>> xattrmap;
-    };
-
-    static fuse_timespec now()
-    {
-        using namespace std::chrono;
-        auto now = system_clock::now();
-        auto sec = floor<seconds>(now);
-        auto nsec = floor<nanoseconds>(now) - floor<nanoseconds>(sec);
-        return fuse_timespec
-        {
-            static_cast<decltype(fuse_timespec::tv_sec)>(sec.time_since_epoch().count()),
-                /* std::chrono epoch is UNIX epoch in C++20 */
-            static_cast<decltype(fuse_timespec::tv_nsec)>(nsec.count()),
-        };
-    }
-
-    static memfs *getself()
-    {
-        return static_cast<memfs *>(fuse_get_context()->private_data);
+        return static_cast<FuseMemfs *>(fuse_get_context()->private_data);
     }
 
     static int getattr(const char *path, struct fuse_stat *stbuf, struct fuse_file_info *fi)
@@ -507,8 +645,8 @@ private:
     }
 #endif
 
-    std::tuple<std::shared_ptr<node_t>, std::string, std::shared_ptr<node_t>>
-        lookup_node(const char *path, node_t *ancestor = nullptr)
+    std::tuple<std::shared_ptr<MemfsNode>, std::string, std::shared_ptr<MemfsNode>>
+        lookup_node(const char *path, MemfsNode *ancestor = nullptr)
     {
         auto prnt = _root;
         std::string name;
@@ -545,7 +683,7 @@ private:
         if (node)
             return -EEXIST;
         fuse_context *context = fuse_get_context();
-        node = std::make_shared<node_t>(++_ino, mode, context->uid, context->gid, dev);
+        node = std::make_shared<MemfsNode>(++_ino, mode, context->uid, context->gid, dev);
         if (data)
         {
             node->resize(std::strlen(data), false);
@@ -585,35 +723,58 @@ private:
             return -EISDIR;
         if (dir && S_IFDIR != (node->stat.st_mode & S_IFMT))
             return -ENOTDIR;
+
         // A file descriptor is a raw pointer to a shared_ptr.
         // This has the effect of incrementing the shared_ptr
         // refcount, thus keeping an open node around even
         // if the node is unlinked.
-        fi->fh = (uint64_t)(uintptr_t)new std::shared_ptr<node_t>(node);
+        fi->fh = (uint64_t)(uintptr_t)new std::shared_ptr<MemfsNode>(node);
         return 0;
     }
 
     int close_node(struct fuse_file_info *fi)
     {
-        delete (std::shared_ptr<node_t> *)(uintptr_t)fi->fh;
+        delete (std::shared_ptr<MemfsNode> *)(uintptr_t)fi->fh;
         return 0;
     }
 
-    std::shared_ptr<node_t> get_node(const char *path, struct fuse_file_info *fi = nullptr)
+    std::shared_ptr<MemfsNode> get_node(const char *path, struct fuse_file_info *fi = nullptr)
     {
         if (!fi)
             return std::get<2>(lookup_node(path));
         else
-            return *(std::shared_ptr<node_t> *)(uintptr_t)fi->fh;
+            return *(std::shared_ptr<MemfsNode> *)(uintptr_t)fi->fh;
     }
 
 private:
     std::mutex _mutex;
     fuse_ino_t _ino;
-    std::shared_ptr<node_t> _root;
+    std::shared_ptr<MemfsNode> _root;
 };
 
-int main(int argc, char *argv[])
+FuseStatus mount(FuseMemfs** memfs,
+	const std::string& mountpoint, unsigned int mode,
+	unsigned int uid, unsigned int gid, unsigned int dev)
 {
-    return memfs().main(argc, argv);
+	FuseStatus status = FuseMemfs::create(memfs, mountpoint,
+		static_cast<fuse_mode_t>(mode), static_cast<fuse_uid_t>(uid),
+		static_cast<fuse_gid_t>(gid), static_cast<fuse_dev_t>(dev));
+	if (status != FuseSuccess)
+		return status;
+    
+    return (*memfs)->start();
+}	
+
+FuseStatus umount(FuseMemfs* memfs)
+{
+	return memfs->stop();
 }
+
+} // namespace memfs
+
+const char* fuseGetErrorString(FuseStatus status)
+{
+	// TODO
+	return nullptr;
+}
+
