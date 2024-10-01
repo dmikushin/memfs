@@ -17,7 +17,7 @@ enum FuseStatus
 	FuseErrorRootDisallowed = 9
 };
 
-const char* fuseGetErrorString(FuseStatus status);
+const std::string fuseGetErrorString(FuseStatus status);
 
 namespace memfs {
 

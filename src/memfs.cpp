@@ -33,6 +33,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "magic_enum/magic_enum.hpp"
 #include "memfs/memfs.h"
 #include "memfs_compat.h"
 
@@ -789,9 +790,8 @@ FuseStatus umount(FuseMemfs* memfs)
 
 } // namespace memfs
 
-const char* fuseGetErrorString(FuseStatus status)
+const std::string fuseGetErrorString(FuseStatus status)
 {
-	// TODO
-	return nullptr;
+	return std::string(magic_enum::enum_name(status));
 }
 

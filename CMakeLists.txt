@@ -10,6 +10,7 @@ pkg_check_modules(FUSE3 REQUIRED fuse3)
 
 add_library(${PROJECT_NAME} STATIC src/${PROJECT_NAME}.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(${PROJECT_NAME} PRIVATE ThirdParty/magic_enum/include)
 target_include_directories(${PROJECT_NAME} PRIVATE ${FUSE3_INCLUDE_DIRS})
 target_compile_definitions(${PROJECT_NAME} PRIVATE FUSE_USE_VERSION=30 __CYGWIN__)
 target_link_libraries(${PROJECT_NAME} ${FUSE3_LIBRARIES})

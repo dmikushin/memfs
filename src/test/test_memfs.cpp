@@ -15,7 +15,7 @@ int main(int argc, char *argv[])
     FuseStatus status = memfs::mount(&memfs, mountpoint);
     if (status != FuseSuccess)
     {
-    	fprintf(stderr, "FuseMemfs error %d: %s\n", static_cast<int>(status), fuseGetErrorString(status));
+    	fprintf(stderr, "FuseMemfs error %d: %s\n", static_cast<int>(status), fuseGetErrorString(status).c_str());
     	exit(EXIT_FAILURE);
     }
     
@@ -24,7 +24,7 @@ int main(int argc, char *argv[])
     status = memfs::umount(memfs);
     if (status != FuseSuccess)
     {
-    	fprintf(stderr, "FuseMemfs error %d: %s\n", static_cast<int>(status), fuseGetErrorString(status));
+    	fprintf(stderr, "FuseMemfs error %d: %s\n", static_cast<int>(status), fuseGetErrorString(status).c_str());
     	exit(EXIT_FAILURE);
     }
 
