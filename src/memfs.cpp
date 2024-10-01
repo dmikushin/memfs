@@ -83,7 +83,9 @@ public :
 		size_t op_size;
 		getFuseOperations(&op, &op_size);
 		
-		fuse = fuse_new(nullptr, op, op_size, user_data);
+		const char* argv[] = { "memfs", nullptr };
+		struct fuse_args args = FUSE_ARGS_INIT(1, const_cast<char**>(argv));
+		fuse = fuse_new(&args, op, op_size, user_data);
 		if (fuse == NULL) {
 			status = FuseErrorNew;
 			return status;
