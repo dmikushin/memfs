@@ -25,10 +25,12 @@
 #include <cstring>
 #include <fuse.h>
 #include <fuse_common.h>
+#include <fuse_lowlevel.h>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <sys/mount.h>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
@@ -48,12 +50,13 @@ protected :
 
 	virtual void getFuseOperations(const struct fuse_operations **op, size_t *op_size) = 0;
 
+	FuseStatus status = FuseErrorUnitialized;
+
 private :
 	
 	const std::string mountpoint;
 	void *user_data;
 	
-	FuseStatus status = FuseErrorUnitialized;
 	struct fuse *fuse = nullptr;
 	struct fuse_session *se = nullptr;
 #if 0
@@ -133,15 +136,14 @@ public :
 		if (status != FuseSuccess)
 			return status;
 
-		int notLazy = 0;
-		if (umount2(mountpoint.c_str(), notLazy) == -1)
-		{
-			status = FuseErrorUnmount;
-			return status;
-		}
+		fuse_session_exit(se);
+		se = nullptr;
+
+		fuse_unmount(fuse);
+		fuse = nullptr;
 			
 		status = FuseErrorUnitialized;
-		return status;
+		return FuseSuccess;
 	}
 	
 	virtual ~Fuse()
@@ -210,12 +212,42 @@ struct MemfsNode
     std::unordered_map<std::string, std::vector<uint8_t>> xattrmap;
 };
 
-// TODO
-// class FuseThread : public Fuse
-// {
-// };
+class FuseThread : public Fuse
+{
+    std::thread fuseThread;
 
-class FuseMemfs : public Fuse
+public:
+    FuseThread(const std::string& mountpoint_, void *user_data_) : Fuse(mountpoint_, user_data_) { }
+
+    virtual FuseStatus start() override
+    {
+		fuseThread = std::thread([this] {
+		    Fuse::start();
+		});
+
+        return FuseSuccess;
+    }
+
+    virtual FuseStatus stop() override
+    {
+        FuseStatus status = Fuse::stop();
+
+        if ((std::this_thread::get_id() != fuseThread.get_id()) && fuseThread.joinable()) {
+            fuseThread.join();
+        }
+
+		return status;
+    }
+
+    virtual ~FuseThread()
+    {
+        if ((std::this_thread::get_id() != fuseThread.get_id()) && fuseThread.joinable()) {
+            fuseThread.join();
+        }
+    }
+};
+
+class FuseMemfs : public FuseThread
 {
     FuseMemfs(FuseMemfs const&) = delete;
     void operator=(FuseMemfs const&) = delete;
@@ -227,10 +259,6 @@ public :
     	fuse_uid_t uid = 0, fuse_gid_t gid = 0, fuse_dev_t dev = 0)
 	{
     	FuseMemfs *memfs_ = new FuseMemfs(mountpoint, mode, uid, gid, dev);
-		memfs_->start();
-    	if (memfs_->getStatus() != FuseSuccess)
-    		return memfs_->getStatus();
-    	
     	*memfs = memfs_;
     	return FuseSuccess;
     }
@@ -289,7 +317,7 @@ private :
     FuseMemfs(const std::string& mountpoint, fuse_mode_t mode,
     	fuse_uid_t uid, fuse_gid_t gid, fuse_dev_t dev) :
     
-   	Fuse(mountpoint, this),
+   	FuseThread(mountpoint, this),
 
 	_ino(1), _root(std::make_shared<MemfsNode>(_ino, S_IFDIR | mode, uid, gid, dev)) { }
 
@@ -783,7 +811,12 @@ FuseStatus mount(FuseMemfs** memfs,
 		return status;
     
     return (*memfs)->start();
-}	
+}
+
+FuseStatus status(FuseMemfs* memfs)
+{
+	return memfs->getStatus();
+}
 
 FuseStatus umount(FuseMemfs* memfs)
 {

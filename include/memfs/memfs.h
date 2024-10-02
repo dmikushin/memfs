@@ -27,6 +27,8 @@ FuseStatus mount(FuseMemfs** memfs,
 	const std::string& mountpoint, unsigned int mode = 00777,
 	unsigned int uid = 0, unsigned int gid = 0, unsigned int dev = 0);
 
+FuseStatus status(FuseMemfs* memfs);
+
 FuseStatus umount(FuseMemfs* memfs);
 
 } // namespace memfs
