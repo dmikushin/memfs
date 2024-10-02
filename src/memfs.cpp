@@ -88,6 +88,9 @@ using basic_string = std::basic_string<C, std::char_traits<C>, allocator<C>>;
 
 using string = std::basic_string<char>;
 
+template <typename T>
+using vector = std::vector<T, allocator<T>>;
+
 template <typename K, typename V>
 using hash_map = std::unordered_map<K, V, std::hash<K>, std::equal_to<K>,
                                     allocator<std::pair<const K, V>>>;
@@ -100,14 +103,14 @@ class MemfsNode {
   friend class FuseMemfs;
 
   struct fuse_stat stat;
-  std::vector<uint8_t> data;
+  memfs::vector<uint8_t> data;
   memfs::hash_map<memfs::string, std::shared_ptr<MemfsNode>> childmap;
   memfs::hash_map<memfs::string, std::vector<uint8_t>> xattrmap;
 
 public:
   MemfsNode(fuse_ino_t ino, fuse_mode_t mode, fuse_uid_t uid, fuse_gid_t gid,
             fuse_dev_t dev = 0)
-      : stat(), childmap(memfs::ral), xattrmap(memfs::ral) {
+      : stat(), data(memfs::ral), childmap(memfs::ral), xattrmap(memfs::ral) {
     stat.st_ino = ino;
     stat.st_mode = mode;
     stat.st_nlink = 1;
