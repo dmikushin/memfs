@@ -35,6 +35,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "foonathan/memory/container.hpp"
 #include "magic_enum/magic_enum.hpp"
 #include "memfs/memfs.h"
 #include "memfs_compat.h"
@@ -152,54 +153,6 @@ public:
   }
 };
 
-static fuse_timespec now() {
-  using namespace std::chrono;
-  auto now = system_clock::now();
-  auto sec = floor<seconds>(now);
-  auto nsec = floor<nanoseconds>(now) - floor<nanoseconds>(sec);
-  return fuse_timespec{
-      static_cast<decltype(fuse_timespec::tv_sec)>(
-          sec.time_since_epoch().count()),
-      /* std::chrono epoch is UNIX epoch in C++20 */
-      static_cast<decltype(fuse_timespec::tv_nsec)>(nsec.count()),
-  };
-}
-
-struct MemfsNode {
-  MemfsNode(fuse_ino_t ino, fuse_mode_t mode, fuse_uid_t uid, fuse_gid_t gid,
-            fuse_dev_t dev = 0)
-      : stat() {
-    stat.st_ino = ino;
-    stat.st_mode = mode;
-    stat.st_nlink = 1;
-    stat.st_uid = uid;
-    stat.st_gid = gid;
-    stat.st_rdev = dev;
-    stat.st_atim = stat.st_mtim = stat.st_ctim = now();
-  }
-
-  void resize(size_t size, bool capacity) {
-    if (capacity) {
-      const size_t unit = 64 * 1024;
-      size_t newcap = (size + unit - 1) / unit * unit;
-      size_t oldcap = data.capacity();
-      if (newcap > oldcap)
-        data.reserve(newcap);
-      else if (newcap < oldcap) {
-        data.resize(newcap);
-        data.shrink_to_fit();
-      }
-    }
-    data.resize(size);
-    stat.st_size = size;
-  }
-
-  struct fuse_stat stat;
-  std::vector<uint8_t> data;
-  std::unordered_map<std::string, std::shared_ptr<MemfsNode>> childmap;
-  std::unordered_map<std::string, std::vector<uint8_t>> xattrmap;
-};
-
 class FuseThread : public Fuse {
   std::thread fuseThread;
 
@@ -229,6 +182,98 @@ public:
         fuseThread.joinable()) {
       fuseThread.join();
     }
+  }
+};
+
+static fuse_timespec now() {
+  using namespace std::chrono;
+  auto now = system_clock::now();
+  auto sec = floor<seconds>(now);
+  auto nsec = floor<nanoseconds>(now) - floor<nanoseconds>(sec);
+  return fuse_timespec{
+      static_cast<decltype(fuse_timespec::tv_sec)>(
+          sec.time_since_epoch().count()),
+      /* std::chrono epoch is UNIX epoch in C++20 */
+      static_cast<decltype(fuse_timespec::tv_nsec)>(nsec.count()),
+  };
+}
+
+namespace memfs
+{
+    struct raw_stat_mallocator
+    {
+        using is_stateful = std::integral_constant<bool, true>; 
+
+        size_t high;
+        size_t current;
+
+        void* allocate_node(std::size_t size, std::size_t alignment)
+        {
+            high += size;
+            current += size;
+            printf("[ %p ] Allocating %zd bytes (%zd high, %zd current)\n", this, size, high, current);
+            return malloc(size);
+        }
+
+        void deallocate_node(void *node, std::size_t size, std::size_t alignment) noexcept
+        {
+            current -= size;
+            printf("[ %p ] Deallocating %zd bytes (%zd high, %zd current)\n", this, size, high, current);
+            free(node);
+        }
+    };  
+
+    template<typename T>
+    using allocator = foonathan::memory::std_allocator<T, memfs::raw_stat_mallocator>;
+
+    template<typename C>
+    using basic_string = std::basic_string<C, std::char_traits<C>, allocator<C>>;
+
+    using string = std::basic_string<char>;
+
+    template<typename K, typename V>
+    using hash_map = std::unordered_map<K, V, std::hash<K>, std::equal_to<K>, allocator<std::pair<const K, V>>>;
+
+	auto ral = memfs::raw_stat_mallocator();
+}
+
+class FuseMemfs;
+
+class MemfsNode {
+  friend class FuseMemfs;
+
+  struct fuse_stat stat;
+  std::vector<uint8_t> data;
+  memfs::hash_map<memfs::string, std::shared_ptr<MemfsNode>> childmap;
+  memfs::hash_map<memfs::string, std::vector<uint8_t>> xattrmap;
+
+public:
+  MemfsNode(fuse_ino_t ino, fuse_mode_t mode, fuse_uid_t uid, fuse_gid_t gid,
+            fuse_dev_t dev = 0)
+      : stat(), childmap(memfs::ral), xattrmap(memfs::ral) {
+    stat.st_ino = ino;
+    stat.st_mode = mode;
+    stat.st_nlink = 1;
+    stat.st_uid = uid;
+    stat.st_gid = gid;
+    stat.st_rdev = dev;
+    stat.st_atim = stat.st_mtim = stat.st_ctim = now();
+  }
+
+  void resize(size_t size, bool capacity) {
+    if (capacity) {
+      const size_t unit = 64 * 1024;
+      size_t newcap = (size + unit - 1) / unit * unit;
+      size_t oldcap = data.capacity();
+      if (newcap > oldcap)
+        data.reserve(newcap);
+      else if (newcap < oldcap) {
+        data.resize(newcap);
+        data.shrink_to_fit();
+      }
+    }
+    data.resize(size);
+    stat.st_size = size;
   }
 };
 
