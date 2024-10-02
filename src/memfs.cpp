@@ -289,7 +289,7 @@ protected:
     };
 
     *op = &op_;
-    *op_size = sizeof(op);
+    *op_size = sizeof(op_);
   }
 
 private:
