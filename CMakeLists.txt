@@ -10,7 +10,7 @@ pkg_check_modules(FUSE3 REQUIRED fuse3)
 
 add_subdirectory(ThirdParty/memory)
 
-add_library(${PROJECT_NAME} STATIC src/${PROJECT_NAME}.cpp)
+add_library(${PROJECT_NAME} STATIC src/${PROJECT_NAME}.cpp src/Fuse.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(${PROJECT_NAME} PRIVATE ThirdParty/magic_enum/include)
 target_include_directories(${PROJECT_NAME} PRIVATE ${FUSE3_INCLUDE_DIRS})

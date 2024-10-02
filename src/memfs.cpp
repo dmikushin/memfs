@@ -23,167 +23,21 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
-#include <fuse.h>
-#include <fuse_common.h>
 #include <fuse_lowlevel.h>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <sys/mount.h>
-#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
 
+#include "Fuse.h"
 #include "foonathan/memory/container.hpp"
 #include "magic_enum/magic_enum.hpp"
 #include "memfs/memfs.h"
 #include "memfs_compat.h"
 
-namespace memfs {
-
-class Fuse {
-  Fuse(Fuse const &) = delete;
-  void operator=(Fuse const &) = delete;
-
-protected:
-  virtual void getFuseOperations(const struct fuse_operations **op,
-                                 size_t *op_size) = 0;
-
-  FuseStatus status = FuseErrorUnitialized;
-
-private:
-  const std::string mountpoint;
-  void *user_data;
-
-  struct fuse *fuse = nullptr;
-  struct fuse_session *se = nullptr;
-#if 0
-    struct fuse_loop_config *loop_config = nullptr;
-#endif
-protected:
-  Fuse(const std::string &mountpoint_, void *user_data_)
-      :
-
-        mountpoint(mountpoint_), user_data(user_data_) {}
-
-public:
-  FuseStatus getStatus() const { return status; }
-
-  virtual FuseStatus start() {
-    if (geteuid() == 0) {
-      status = FuseErrorRootDisallowed;
-      return status;
-    }
-    if (status == FuseSuccess)
-      return FuseErrorAlreadyStarted;
-
-    const struct fuse_operations *op;
-    size_t op_size;
-    getFuseOperations(&op, &op_size);
-
-    const char *argv[] = {"memfs", nullptr};
-    struct fuse_args args = FUSE_ARGS_INIT(1, const_cast<char **>(argv));
-    fuse = fuse_new(&args, op, op_size, user_data);
-    if (fuse == NULL) {
-      status = FuseErrorNew;
-      return status;
-    }
-
-    if (fuse_mount(fuse, mountpoint.c_str())) {
-      status = FuseErrorMount;
-      return status;
-    }
-
-    se = fuse_get_session(fuse);
-    if (fuse_set_signal_handlers(se)) {
-      status = FuseErrorSignalHandlers;
-      return status;
-    }
-
-    status = FuseSuccess;
-#if 0
-    loop_config = fuse_loop_cfg_create();
-    if (loop_config == NULL) {
-      status = FuseErrorLoopConfig;
-      goto out3;
-    }
-
-    const unsigned int enable = 1;
-    fuse_loop_cfg_set_clone_fd(loop_config, enable);
-
-    long num_threads = sysconf(_SC_NPROCESSORS_ONLN);
-    fuse_loop_cfg_set_idle_threads(loop_config, num_threads);
-    fuse_loop_cfg_set_max_threads(loop_config, num_threads);
-    
-    status = FuseSuccess;
-        
-    if (fuse_loop_mt(fuse, loop_config))
-      status = FuseErrorLoop;
-#else
-    if (fuse_loop(fuse))
-      status = FuseErrorLoop;
-#endif
-    return status;
-  }
-
-  virtual FuseStatus stop() {
-    if (status != FuseSuccess)
-      return status;
-
-    fuse_session_exit(se);
-    se = nullptr;
-
-    fuse_unmount(fuse);
-    fuse = nullptr;
-
-    status = FuseErrorUnitialized;
-    return FuseSuccess;
-  }
-
-  virtual ~Fuse() {
-    if (se)
-      fuse_remove_signal_handlers(se);
-
-    if (status != FuseErrorMount)
-      fuse_unmount(fuse);
-
-    if (fuse)
-      fuse_destroy(fuse);
-  }
-};
-
-class FuseThread : public Fuse {
-  std::thread fuseThread;
-
-public:
-  FuseThread(const std::string &mountpoint_, void *user_data_)
-      : Fuse(mountpoint_, user_data_) {}
-
-  virtual FuseStatus start() override {
-    fuseThread = std::thread([this] { Fuse::start(); });
-
-    return FuseSuccess;
-  }
-
-  virtual FuseStatus stop() override {
-    FuseStatus status = Fuse::stop();
-
-    if ((std::this_thread::get_id() != fuseThread.get_id()) &&
-        fuseThread.joinable()) {
-      fuseThread.join();
-    }
-
-    return status;
-  }
-
-  virtual ~FuseThread() {
-    if ((std::this_thread::get_id() != fuseThread.get_id()) &&
-        fuseThread.joinable()) {
-      fuseThread.join();
-    }
-  }
-};
+namespace {
 
 static fuse_timespec now() {
   using namespace std::chrono;
@@ -198,44 +52,47 @@ static fuse_timespec now() {
   };
 }
 
-namespace memfs
-{
-    struct raw_stat_mallocator
-    {
-        using is_stateful = std::integral_constant<bool, true>; 
+} // namespace
 
-        size_t high;
-        size_t current;
+namespace memfs {
 
-        void* allocate_node(std::size_t size, std::size_t alignment)
-        {
-            high += size;
-            current += size;
-            printf("[ %p ] Allocating %zd bytes (%zd high, %zd current)\n", this, size, high, current);
-            return malloc(size);
-        }
+struct raw_stat_mallocator {
+  using is_stateful = std::integral_constant<bool, true>;
 
-        void deallocate_node(void *node, std::size_t size, std::size_t alignment) noexcept
-        {
-            current -= size;
-            printf("[ %p ] Deallocating %zd bytes (%zd high, %zd current)\n", this, size, high, current);
-            free(node);
-        }
-    };  
+  size_t high;
+  size_t current;
 
-    template<typename T>
-    using allocator = foonathan::memory::std_allocator<T, memfs::raw_stat_mallocator>;
+  void *allocate_node(std::size_t size, std::size_t alignment) {
+    high += size;
+    current += size;
+    printf("[ %p ] Allocating %zd bytes (%zd high, %zd current)\n", this, size,
+           high, current);
+    return malloc(size);
+  }
 
-    template<typename C>
-    using basic_string = std::basic_string<C, std::char_traits<C>, allocator<C>>;
+  void deallocate_node(void *node, std::size_t size,
+                       std::size_t alignment) noexcept {
+    current -= size;
+    printf("[ %p ] Deallocating %zd bytes (%zd high, %zd current)\n", this,
+           size, high, current);
+    free(node);
+  }
+};
 
-    using string = std::basic_string<char>;
+template <typename T>
+using allocator =
+    foonathan::memory::std_allocator<T, memfs::raw_stat_mallocator>;
 
-    template<typename K, typename V>
-    using hash_map = std::unordered_map<K, V, std::hash<K>, std::equal_to<K>, allocator<std::pair<const K, V>>>;
+template <typename C>
+using basic_string = std::basic_string<C, std::char_traits<C>, allocator<C>>;
 
-	auto ral = memfs::raw_stat_mallocator();
-}
+using string = std::basic_string<char>;
+
+template <typename K, typename V>
+using hash_map = std::unordered_map<K, V, std::hash<K>, std::equal_to<K>,
+                                    allocator<std::pair<const K, V>>>;
+
+auto ral = memfs::raw_stat_mallocator();
 
 class FuseMemfs;
 
