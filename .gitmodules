@@ -1,6 +1,6 @@
 [submodule "ThirdParty/magic_enum"]
 	path = ThirdParty/magic_enum
 	url = https://github.com/Neargye/magic_enum.git
-[submodule "ThirdParty/memory"]
-	path = ThirdParty/memory
-	url = https://github.com/foonathan/memory.git
+[submodule "ThirdParty/stl_allocator"]
+	path = ThirdParty/stl_allocator
+	url = https://github.com/dmikushin/stl_allocator.git

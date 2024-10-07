@@ -32,10 +32,12 @@
 #include <vector>
 
 #include "Fuse.h"
-#include "foonathan/memory/container.hpp"
 #include "magic_enum/magic_enum.hpp"
 #include "memfs/memfs.h"
 #include "memfs_compat.h"
+#include "xstring.h"
+#include "xvector.h"
+#include "xunordered_map.h"
 
 namespace {
 
@@ -56,46 +58,31 @@ static fuse_timespec now() {
 
 namespace memfs {
 
-struct raw_stat_mallocator {
-  using is_stateful = std::integral_constant<bool, true>;
-
-  size_t high;
-  size_t current;
-
-  void *allocate_node(std::size_t size, std::size_t alignment) {
-    high += size;
-    current += size;
-    printf("[ %p ] Allocating %zd bytes (%zd high, %zd current)\n", this, size,
-           high, current);
-    return malloc(size);
-  }
-
-  void deallocate_node(void *node, std::size_t size,
-                       std::size_t alignment) noexcept {
-    current -= size;
-    printf("[ %p ] Deallocating %zd bytes (%zd high, %zd current)\n", this,
-           size, high, current);
-    free(node);
-  }
-};
+using string = xstring;
 
 template <typename T>
-using allocator =
-    foonathan::memory::std_allocator<T, memfs::raw_stat_mallocator>;
-
-template <typename C>
-using basic_string = std::basic_string<C, std::char_traits<C>, allocator<C>>;
-
-using string = std::basic_string<char>;
-
-template <typename T>
-using vector = std::vector<T, allocator<T>>;
+using vector = xvector<T>;
 
 template <typename K, typename V>
-using hash_map = std::unordered_map<K, V, std::hash<K>, std::equal_to<K>,
-                                    allocator<std::pair<const K, V>>>;
+using hash_map = xunordered_map<K, V>;
 
-auto ral = memfs::raw_stat_mallocator();
+} // namespace memfs
+
+namespace std {
+
+template<>
+class hash<memfs::string> {
+public:
+    std::size_t operator()(memfs::string const& key) const noexcept {
+        std::string_view key_view(key.data(), key.size());
+        return std::hash<std::string_view>{}(key_view);
+    }
+
+};
+
+}
+
+namespace memfs {
 
 class FuseMemfs;
 
@@ -110,7 +97,7 @@ class MemfsNode {
 public:
   MemfsNode(fuse_ino_t ino, fuse_mode_t mode, fuse_uid_t uid, fuse_gid_t gid,
             fuse_dev_t dev = 0)
-      : stat(), data(memfs::ral), childmap(memfs::ral), xattrmap(memfs::ral) {
+      : stat() {
     stat.st_ino = ino;
     stat.st_mode = mode;
     stat.st_nlink = 1;
@@ -204,8 +191,8 @@ private:
 
         FuseThread(mountpoint, this),
 
-        _ino(1), _root(std::make_shared<MemfsNode>(_ino, S_IFDIR | mode, uid,
-                                                   gid, dev)) {}
+        _ino(1), _root(std::allocate_shared<MemfsNode>(stl_allocator<MemfsNode>(), _ino, S_IFDIR | mode, uid,
+                                                       gid, dev)) {}
 
 private:
   static FuseMemfs *getself() {
@@ -424,7 +411,7 @@ private:
       return -ENOENT;
     if (0 == std::strcmp("com.apple.ResourceFork", name0))
       return -ENOTSUP;
-    std::string name = name0;
+    const string name = name0;
     if (XATTR_CREATE == flags) {
       if (node->xattrmap.end() != node->xattrmap.find(name))
         return -EEXIST;
@@ -445,7 +432,7 @@ private:
       return -ENOENT;
     if (0 == std::strcmp("com.apple.ResourceFork", name0))
       return -ENOTSUP;
-    std::string name = name0;
+    const string name = name0;
     auto iter = node->xattrmap.find(name);
     if (node->xattrmap.end() == iter)
       return -ENOATTR;
@@ -484,7 +471,7 @@ private:
       return -ENOENT;
     if (0 == std::strcmp("com.apple.ResourceFork", name0))
       return -ENOTSUP;
-    std::string name = name0;
+    const string name = name0;
     return node->xattrmap.erase(name) ? 0 : -ENOATTR;
   }
 
@@ -546,11 +533,11 @@ private:
   }
 #endif
 
-  std::tuple<std::shared_ptr<MemfsNode>, std::string,
+  std::tuple<std::shared_ptr<MemfsNode>, string,
              std::shared_ptr<MemfsNode>>
   lookup_node(const char *path, MemfsNode *ancestor = nullptr) {
     auto prnt = _root;
-    std::string name;
+    string name;
     auto node = prnt;
     for (const char *part = path, *p; *part; part = p + !!(*p)) {
       for (p = part; *p && '/' != *p; p++)
